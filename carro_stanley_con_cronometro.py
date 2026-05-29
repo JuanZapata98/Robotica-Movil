@@ -192,7 +192,6 @@ def launch_carla(carla_path=None):
         "/Game/Maps/RaceTrack",
         "-windowed",
         "-carla-server",
-        "-benchmark",
         "-fps=15",
         "-ResX=800",
         "-ResY=450",
