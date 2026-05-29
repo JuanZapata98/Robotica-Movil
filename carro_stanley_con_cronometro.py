@@ -16,14 +16,9 @@ HOST = "localhost"
 PORT = 2000
 
 WHEELBASE = 2.7
-# FIX A: STANLEY_GAIN era 0.35 → demasiado bajo; a 60 km/h con cte=2m
-#         generaba solo 0.04 de steer, insuficiente para corregir.
+
 STANLEY_GAIN = 1.5
-TARGET_SPEED = 60.0         # km/h
-# FIX B (velocidad): controlador PI reemplaza el P puro.
-#   Con P puro: throttle = KP * error. Cuando speed→target, error→0 → throttle→0.
-#   El carro se estabiliza donde KP*error = drag_friction, siempre por debajo del target.
-#   Con PI el término integral acumula el error y lo compensa hasta llegar al target.
+TARGET_SPEED = 70.0         # km/h
 SPEED_KP    = 0.8
 SPEED_KI    = 0.05
 MAX_STEER   = 0.6           # rad, ángulo máximo de dirección del vehículo
