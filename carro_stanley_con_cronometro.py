@@ -3,9 +3,10 @@ import csv
 import logging
 import math
 import os
+import platform
 import subprocess
-import time
 import sys
+import time
 
 from carla.client import make_carla_client
 from carla.settings import CarlaSettings
@@ -16,12 +17,11 @@ HOST = "localhost"
 PORT = 2000
 
 WHEELBASE = 2.7
-
 STANLEY_GAIN = 1.5
-TARGET_SPEED = 70.0         # km/h
-SPEED_KP    = 0.8
-SPEED_KI    = 0.05
-MAX_STEER   = 0.6           # rad, ángulo máximo de dirección del vehículo
+TARGET_SPEED = 70.0
+SPEED_KP = 0.8
+SPEED_KI = 0.05
+MAX_STEER = 0.6
 MIN_SPEED_FOR_STANLEY = 0.1
 
 
@@ -30,10 +30,9 @@ def wrap_to_pi(angle):
 
 
 # =============================================================================
-# CRONÓMETRO DE VUELTA
+# CRONOMETRO DE VUELTA
 # =============================================================================
 
-# Coordenadas de la línea de meta en RaceTrack
 META_Y = -9.0
 META_Y_TOL = 2.0
 META_X_MIN = -200.0
@@ -59,7 +58,7 @@ class LapTimer:
             self._lap_start = now
             self._dist_acum = 0.0
             self._started = True
-            print('\n[LAP] Cronómetro iniciado.')
+            print('\n[LAP] Cronometro iniciado.')
             return
 
         elapsed = now - self._lap_start
@@ -121,17 +120,91 @@ def render_hud(lap_timer, speed_kmh, closest_idx, x, y):
     sys.stdout.flush()
 
 
+# =============================================================================
+# LANZAR CARLA (Windows / Linux)
+# =============================================================================
 
-def launch_carla():
-    current_dir = os.path.dirname(os.path.abspath(__file__))
-    carla_path = os.path.abspath(os.path.join(current_dir, "..", "CarlaUE4.exe"))
+def find_carla_executable():
+    """Busca el ejecutable de CARLA segun el sistema operativo.
+
+    Prioridad:
+      1. Variable de entorno CARLA_ROOT (si esta definida)
+      2. Rutas relativas tipicas a la carpeta del script
+      3. Rutas absolutas comunes (~/CarlaSimulator, /opt/carla, etc.)
+
+    Devuelve la ruta al ejecutable, o None si no lo encuentra.
+    """
+    is_windows = platform.system() == "Windows"
+    exe_name = "CarlaUE4.exe" if is_windows else "CarlaUE4.sh"
+
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
+    # 1) Variable de entorno
+    env_root = os.environ.get("CARLA_ROOT")
+    candidates = []
+    if env_root:
+        candidates.append(os.path.join(env_root, exe_name))
+
+    # 2) Rutas tipicas relativas al script (asumiendo que el script vive
+    #    dentro de .../CarlaSimulator/PythonClient/ o similar)
+    candidates += [
+        os.path.join(script_dir, "..", exe_name),
+        os.path.join(script_dir, "..", "..", exe_name),
+        os.path.join(script_dir, exe_name),
+    ]
+
+    # 3) Rutas absolutas comunes en Linux
+    if not is_windows:
+        home = os.path.expanduser("~")
+        candidates += [
+            os.path.join(home, "CarlaSimulator", exe_name),
+            os.path.join(home, "carla", exe_name),
+            os.path.join(home, "Carla0.8", "CarlaSimulator", exe_name),
+            "/opt/carla/" + exe_name,
+            "/opt/carla-simulator/" + exe_name,
+        ]
+
+    for path in candidates:
+        path = os.path.abspath(path)
+        if os.path.isfile(path):
+            return path
+    return None
+
+
+def launch_carla(carla_path=None):
+    """Lanza CARLA. Si no se pasa ruta explicita, intenta autodetectarla."""
+    if carla_path is None:
+        carla_path = find_carla_executable()
+        if carla_path is None:
+            raise FileNotFoundError(
+                "No se encontro CarlaUE4 (.sh en Linux, .exe en Windows).\n"
+                "Opciones:\n"
+                "  1. Pasa la ruta con --carla-path /ruta/a/CarlaUE4.sh\n"
+                "  2. Define la variable de entorno CARLA_ROOT\n"
+                "       export CARLA_ROOT=/home/tu_usuario/CarlaSimulator\n"
+                "  3. Usa --no-launch si ya lanzaste CARLA manualmente"
+            )
+
     print("Ruta CARLA:", carla_path)
-    subprocess.Popen([
+
+    args = [
         carla_path,
         "/Game/Maps/RaceTrack",
-        "-windowed", "-carla-server", "-benchmark",
-        "-fps=15", "-ResX=800", "-ResY=450", "-quality-level=Low",
-    ])
+        "-windowed",
+        "-carla-server",
+        "-benchmark",
+        "-fps=15",
+        "-ResX=800",
+        "-ResY=450",
+        "-quality-level=Low",
+    ]
+
+    # En Linux el .sh necesita permisos de ejecucion
+    if platform.system() != "Windows" and not os.access(carla_path, os.X_OK):
+        print("Aviso: {} no es ejecutable. Intenta:".format(carla_path))
+        print("  chmod +x {}".format(carla_path))
+
+    subprocess.Popen(args)
     print("Abriendo CARLA...")
     time.sleep(20)
 
@@ -175,8 +248,6 @@ def stanley_control(x, y, yaw, speed, waypoints):
     front_y = y + (WHEELBASE / 2.0) * math.sin(yaw)
 
     closest_idx = closest_waypoint_index(front_x, front_y, waypoints)
-
-    # Stanley usa el mismo punto de referencia para heading y cte.
     yaw_ref = path_heading(waypoints, closest_idx)
     wx, wy = waypoints[closest_idx]
 
@@ -196,10 +267,10 @@ def stanley_control(x, y, yaw, speed, waypoints):
 
 def run_carla_client(waypoints_file):
     waypoints = load_waypoints(waypoints_file)
-    print(f"Waypoints cargados: {len(waypoints)}")
+    print("Waypoints cargados: {}".format(len(waypoints)))
     print("Primeros puntos:", waypoints[:3])
 
-    target_speed_ms = TARGET_SPEED / 3.6   # m/s
+    target_speed_ms = TARGET_SPEED / 3.6
     lap_timer = LapTimer()
 
     with make_carla_client(HOST, PORT) as client:
@@ -214,7 +285,7 @@ def run_carla_client(waypoints_file):
         client.start_episode(0)
         print("Stanley activo. CTRL+C para detener.")
 
-        speed_integral = 0.0   # acumulador del termino integral de velocidad
+        speed_integral = 0.0
 
         while True:
             try:
@@ -228,26 +299,25 @@ def run_carla_client(waypoints_file):
             pm = measurements.player_measurements
             transform = pm.transform
 
-            x     = transform.location.x
-            y     = transform.location.y
-            yaw   = math.radians(transform.rotation.yaw)
-            speed = pm.forward_speed   # m/s
+            x = transform.location.x
+            y = transform.location.y
+            yaw = math.radians(transform.rotation.yaw)
+            speed = pm.forward_speed
 
             steer, cte, he, closest_idx = stanley_control(x, y, yaw, speed, waypoints)
 
-            # Controlador PI de velocidad con anti-windup
-            speed_error    = target_speed_ms - speed
+            speed_error = target_speed_ms - speed
             speed_integral = max(-20.0, min(20.0, speed_integral + speed_error))
-            throttle_raw   = SPEED_KP * speed_error + SPEED_KI * speed_integral
-            throttle       = max(0.0, min(1.0, throttle_raw))
-            throttle      *= max(0.25, 1.0 - abs(steer))
+            throttle_raw = SPEED_KP * speed_error + SPEED_KI * speed_integral
+            throttle = max(0.0, min(1.0, throttle_raw))
+            throttle *= max(0.25, 1.0 - abs(steer))
 
-            control            = VehicleControl()
-            control.throttle   = throttle
-            control.steer      = steer
-            control.brake      = 0.0
+            control = VehicleControl()
+            control.throttle = throttle
+            control.steer = steer
+            control.brake = 0.0
             control.hand_brake = False
-            control.reverse    = False
+            control.reverse = False
             client.send_control(control)
 
             lap_timer.update(x, y)
@@ -260,15 +330,19 @@ def main():
                         help="CSV con columnas x,y (por defecto: waypoints.csv)")
     parser.add_argument("--no-launch", action="store_true",
                         help="No abrir CARLA automaticamente")
+    parser.add_argument("--carla-path", default=None,
+                        help="Ruta explicita al ejecutable de CARLA "
+                             "(CarlaUE4.sh en Linux, CarlaUE4.exe en Windows). "
+                             "Si no se pasa, se autodetecta.")
     args = parser.parse_args()
 
-    current_dir    = os.path.dirname(os.path.abspath(__file__))
+    current_dir = os.path.dirname(os.path.abspath(__file__))
     waypoints_file = args.waypoints_file
     if not os.path.isabs(waypoints_file):
         waypoints_file = os.path.join(current_dir, waypoints_file)
 
     if not args.no_launch:
-        launch_carla()
+        launch_carla(args.carla_path)
     else:
         print("Se omitio el lanzamiento automatico de CARLA.")
 
